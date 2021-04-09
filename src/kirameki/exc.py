@@ -1,0 +1,2 @@
+class KiramekiWarning(Warning):
+    pass
