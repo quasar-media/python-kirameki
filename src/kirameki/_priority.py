@@ -172,6 +172,8 @@ class PriorityPool(BasePool):
                 self._log.critical("stalled")
 
                 def _stalled_close():
+                    if self.closed():
+                        return
                     try:
                         self.close()
                     except Exception:
