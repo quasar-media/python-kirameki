@@ -22,7 +22,7 @@ class row(tuple):
         except LookupError:
             return default
 
-    def __str__(self):
+    def __str__(self):  # pragma: no cover
         return "<{} object at 0x{:x}>".format(type(self).__name__, id(self))
 
     def __repr__(self):
