@@ -21,8 +21,7 @@ class PriorityPool(BasePool):
     # begin pool interface
 
     def closed(self):
-        with self._close_lock:
-            return self._closed
+        return self._closed
 
     def size(self):
         # XXX(auri): some invocations of this method might not be
@@ -56,10 +55,6 @@ class PriorityPool(BasePool):
             raise exc.PoolError(
                 "attempting to insert a foreign connection"
             ) from None
-
-        if self.closed():
-            conn.close()
-            return
 
         if conn.closed:
             self._ensure_minconn()
@@ -106,13 +101,8 @@ class PriorityPool(BasePool):
         self._connect_pool = futures.ThreadPoolExecutor(1)
         self._pending_lock = threading.Lock()
         self._in_pending = 0
-        self._close_lock = threading.Lock()
 
     def _close(self):
-        with self._close_lock:
-            self._unsafe_close()
-
-    def _unsafe_close(self):
         self._closed = True
         errors = []
 
