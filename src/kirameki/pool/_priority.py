@@ -7,8 +7,8 @@ from concurrent import futures
 import psycopg2
 from psycopg2.extensions import TRANSACTION_STATUS_IDLE
 
-from kirameki import exc
-from kirameki._base import BasePool
+from kirameki.pool import exc
+from kirameki.pool._base import BasePool
 
 
 class PriorityPool(BasePool):
@@ -73,7 +73,9 @@ class PriorityPool(BasePool):
             self.stale_timeout is not None
             and (time.monotonic() - entry.created_on) >= self.stale_timeout
         ):
-            self._log.debug("discarding stale (or on request) connection %r", conn)
+            self._log.debug(
+                "discarding stale (or on request) connection %r", conn
+            )
             self._ensure_minconn()
             conn.close()
             return

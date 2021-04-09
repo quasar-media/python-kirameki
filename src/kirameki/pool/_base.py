@@ -3,7 +3,7 @@ import os
 import threading
 from abc import ABCMeta, abstractmethod
 
-from kirameki import exc
+from kirameki.pool import exc
 
 
 class BasePool(metaclass=ABCMeta):
