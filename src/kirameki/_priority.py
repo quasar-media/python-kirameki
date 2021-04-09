@@ -57,10 +57,12 @@ class PriorityPool(BasePool):
             ) from None
 
         if conn.closed:
+            self._log.warning("returned closed connection")
             self._ensure_minconn()
             return
         txn_status = conn.info.transaction_status
         if txn_status != TRANSACTION_STATUS_IDLE:
+            self._log.warning("discarding unclean connection %r", conn)
             self._ensure_minconn()
             try:
                 conn.rollback()
@@ -71,6 +73,7 @@ class PriorityPool(BasePool):
             self.stale_timeout is not None
             and (time.monotonic() - entry.created_on) >= self.stale_timeout
         ):
+            self._log.debug("discarding stale (or on request) connection %r", conn)
             self._ensure_minconn()
             conn.close()
             return
@@ -107,7 +110,7 @@ class PriorityPool(BasePool):
         errors = []
 
         def _close(entry):
-            self._log.debug("closing %r on close", entry)
+            self._log.debug("discarding %r on close", entry)
             try:
                 entry.conn.close()
             except Exception as e:
