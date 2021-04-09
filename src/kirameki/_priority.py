@@ -25,6 +25,10 @@ class PriorityPool(BasePool):
             return self._closed
 
     def size(self):
+        # XXX(auri): some invocations of this method might not be
+        # fully thread-safe due to _in_pending; not sure if a
+        # situation like that could ever occur in a real world
+        # scenario
         return self._queue.qsize() + self._in_pending + len(self._in_use)
 
     def _get_connection(self, timeout=None):
@@ -36,7 +40,9 @@ class PriorityPool(BasePool):
         except queue.Empty:
             raise exc.PoolTimeout() from None
         if entry is None:
-            # awaken the next thread waiting for a connection
+            # NOTE(auri): the chain is started by #_unsafe_close()
+            # after draining the queue of real connections; we must
+            # pass it on to awake other threads waiting for a connection
             self._queue.put_nowait(None)
             raise exc.PoolClosed()
         self._log.debug("acquired %r", entry)
@@ -93,6 +99,9 @@ class PriorityPool(BasePool):
     def _reset(self):
         self._closed = False
         self._queue = queue.PriorityQueue(self.maxconn)
+        # NOTE(auri): do not change this dict implementation to
+        # anything other than the builtin dict; the atomicity of
+        # its __getitem__ is relied upon in this implementation
         self._in_use = {}
         self._connect_pool = futures.ThreadPoolExecutor(1)
         self._pending_lock = threading.Lock()
@@ -130,7 +139,9 @@ class PriorityPool(BasePool):
                 break
             _close(entry)
 
-        # awaken the first thread waiting for a connection
+        # NOTE(auri): awakens the first thread waiting for a
+        # connection; the thread then returns the None to the
+        # queue thus chaining the reaction
         self._queue.put_nowait(None)
 
         if errors:
@@ -148,6 +159,10 @@ class PriorityPool(BasePool):
         fut.add_done_callback(lambda _: self._dec_pending())
 
     def _inc_pending(self):
+        # NOTE(auri): the lock is necessary because the increment
+        # operation, although appearing atomic, isn't, and losing
+        # even one pending connection would yield a catastrophic
+        # outcome
         with self._pending_lock:
             self._in_pending += 1
 
