@@ -1,4 +1,5 @@
 import collections
+import enum
 import functools
 import importlib
 import os
@@ -195,3 +196,75 @@ class PyLoader(Loader):
                     "could not deduce root_path; please specify it explicitly"
                 )
         return os.path.abspath(os.path.dirname(fp))
+
+
+class PlanningError(Exception):
+    pass
+
+
+class UnknownMigrationError(PlanningError):
+    pass
+
+
+class StateHoleError(PlanningError):
+    pass
+
+
+class PlanDirection(enum.Enum):
+    BACKWARD = -1
+    UNCHANGED = 0
+    FORWARD = 1
+
+
+class Planner:
+    def __init__(self, versions):
+        self._versions = versions
+
+    def plan(self, state, target=None):
+        raise NotImplementedError()
+
+
+class SimplePlanner(Planner):
+    def plan(self, state, target=None):
+        if target is None:
+            target = self._versions[-1]
+        else:
+            target = min(target, self._versions[-1])
+            target = max(target, 0)
+
+        current = self._get_current_version(state)
+        plan = []
+        direction = None
+        if current == target:
+            direction = PlanDirection.UNCHANGED
+        elif target > current:
+            direction = PlanDirection.FORWARD
+            for v in self._versions:
+                if v > current and v <= target:
+                    plan.append(v)
+        else:
+            direction = PlanDirection.BACKWARD
+            for v in reversed(self._versions):
+                if v <= current and v > target:
+                    plan.append(v)
+
+        return plan, direction, current, target
+
+    def _get_current_version(self, state):
+        if not state:
+            return -1
+
+        version_set = set(self._versions)
+        # First, we verify we know of every single version
+        # contained within the state.
+        for v in state:
+            if v not in version_set:
+                raise UnknownMigrationError(v)
+
+        # Then, we verify that there are no holes within
+        # the state.
+        for their_ver, our_ver in zip(state, self._versions):
+            if their_ver != our_ver:
+                raise StateHoleError(our_ver)
+
+        return state[-1]

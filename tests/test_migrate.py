@@ -1,3 +1,4 @@
+import math
 import os
 import os.path
 import pkgutil
@@ -5,14 +6,14 @@ import sys
 
 import pytest
 
-from kirameki.migrate import PyLoader
+from kirameki import migrate
 
 
 class TestPyLoader:
     @pytest.mark.casedirs("migrate/test_pyloader/validate_0")
     def test_valid_0(self, casedirs):
         (d,) = casedirs
-        loader = PyLoader(
+        loader = migrate.PyLoader(
             "test_module", root_path=os.path.join(d, "test_module")
         )
         migrations = loader.load_all()
@@ -29,19 +30,19 @@ class TestPyLoader:
         ]
 
     def test_get_root_path(self):
-        loader = PyLoader(__name__)
+        loader = migrate.PyLoader(__name__)
         assert loader.root_path == os.path.dirname(__file__)
 
     @pytest.mark.casedirs("migrate/test_pyloader/test_get_root_path")
     def test_get_root_path_unloaded(self, casedirs, monkeypatch):
         (d,) = casedirs
         monkeypatch.syspath_prepend(d)
-        loader = PyLoader("_unloaded")
+        loader = migrate.PyLoader("_unloaded")
         assert loader.root_path == d
 
     def test_get_root_path_unloaded_main(self, monkeypatch):
         monkeypatch.delitem(sys.modules, "__main__")
-        loader = PyLoader("__main__")
+        loader = migrate.PyLoader("__main__")
         assert loader.root_path == os.getcwd()
 
     def test_get_root_path_no_get_filename(self, monkeypatch):
@@ -53,4 +54,46 @@ class TestPyLoader:
         monkeypatch.delitem(sys.modules, __name__)
 
         with pytest.raises(RuntimeError, match="root_path"):
-            PyLoader(__name__)
+            migrate.PyLoader(__name__)
+
+
+def test_simple_planner():
+    migrations = [1, 2, 3, 4, 5, 6, 7, 8]
+    planner = migrate.SimplePlanner(migrations)
+
+    with pytest.raises(migrate.UnknownMigrationError, match="42"):
+        planner.plan([1, 2, 3, 42])
+
+    with pytest.raises(migrate.StateHoleError, match="2"):
+        planner.plan([1, 3, 4, 5])
+
+    state = migrations
+    assert (
+        planner.plan(state)
+        == planner.plan(state, 8)
+        == planner.plan(state, math.inf)
+        == ([], migrate.PlanDirection.UNCHANGED, 8, 8)
+    )
+
+    state = migrations[:-2]
+    assert (
+        planner.plan(state)
+        == planner.plan(state, 8)
+        == planner.plan(state, math.inf)
+        == (migrations[-2:], migrate.PlanDirection.FORWARD, 6, 8)
+    )
+    assert planner.plan(state, 7) == ([7], migrate.PlanDirection.FORWARD, 6, 7)
+
+    state = migrations
+    assert (
+        planner.plan(state, -1)
+        == planner.plan(state, 0)
+        == planner.plan(state, -math.inf)
+        == (list(reversed(migrations)), migrate.PlanDirection.BACKWARD, 8, 0)
+    )
+    assert planner.plan(state, 4) == (
+        list(reversed(migrations[-4:])),
+        migrate.PlanDirection.BACKWARD,
+        8,
+        4,
+    )
