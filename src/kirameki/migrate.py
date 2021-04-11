@@ -101,7 +101,7 @@ class PyLoader(Loader):
         self.migration_pkg = migration_pkg or "migrations"
 
     def load_all(self):
-        for mod in self._iter_modules():
+        for mod in self._collect_modules():
             version = self._get_module_attr(
                 mod,
                 "version",
@@ -146,24 +146,39 @@ class PyLoader(Loader):
             return None
         return value
 
-    def _iter_modules(self):
+    def _collect_modules(self):
         mdir = os.path.join(self.root_path, self.migration_pkg)
         if not os.path.isdir(mdir):
             raise RuntimeError("not a directory: {}".format(mdir))
-        for modinfo in pkgutil.iter_modules(
-            [mdir],
-            prefix="{}.{}.".format(self.import_name, self.migration_pkg),
-        ):
-            name = modinfo.name
-            if modinfo.ispkg:
-                self._report_warning(name, "is a package, ignoring")
-                continue
-            try:
-                mod = importlib.import_module(name)
-            except Exception as e:
-                self._report_error(name, "failed to import", cause=e)
-                continue
-            yield mod
+
+        import_path = os.path.dirname(self.root_path)
+        sys.path.insert(0, import_path)
+        try:
+            modules = []
+            for modinfo in pkgutil.iter_modules(
+                [mdir],
+                prefix="{}.{}.".format(self.import_name, self.migration_pkg),
+            ):
+                name = modinfo.name
+                if modinfo.ispkg:
+                    self._report_warning(name, "is a package, ignoring")
+                    continue
+                try:
+                    # XXX(auri): if we could avoid this call and instead be
+                    # able to find_spec/module_from_spec/exec_module
+                    # without going around the system cache, it'd be more
+                    # ideal than the sys.path workaround
+                    mod = importlib.import_module(name)
+                except Exception as e:
+                    self._report_error(name, "failed to import", cause=e)
+                    continue
+                modules.append(mod)
+        finally:
+            sys.path.remove(import_path)
+
+        # XXX(auri): this method should always be eagerly evaluated
+        # to ensure we never leave the import_path within sys.path
+        return modules
 
     def _get_root_path(self):
         try:
