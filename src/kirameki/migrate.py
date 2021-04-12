@@ -2,10 +2,13 @@ import collections
 import enum
 import functools
 import importlib
+import logging
 import os
 import os.path
 import pkgutil
 import sys
+
+from psycopg2 import errors
 
 
 class Migration:
@@ -220,17 +223,14 @@ class Planner:
     def __init__(self, versions):
         self._versions = versions
 
-    def plan(self, state, target=None):
+    def plan(self, state, target):
         raise NotImplementedError()
 
 
 class SimplePlanner(Planner):
-    def plan(self, state, target=None):
-        if target is None:
-            target = self._versions[-1]
-        else:
-            target = min(target, self._versions[-1])
-            target = max(target, 0)
+    def plan(self, state, target):
+        target = min(target, self._versions[-1])
+        target = max(target, 0)
 
         current = self._get_current_version(state)
         plan = []
@@ -268,3 +268,140 @@ class SimplePlanner(Planner):
                 raise StateHoleError(our_ver)
 
         return state[-1]
+
+
+class LoadFailed(RuntimeError):
+    pass
+
+
+class Migrate:
+    _log = logging.getLogger(__qualname__)
+
+    def __init__(
+        self,
+        import_name,
+        connection_factory,
+        *,
+        loader=None,
+        planner_class=SimplePlanner,
+    ):
+        self.import_name = import_name
+        self.connection_factory = connection_factory
+        self.loader = loader or PyLoader(import_name)
+        self.planner_class = planner_class
+
+        self._migrations = {m.version: m for m in self.loader.load_all()}
+        self._versions = list(self._migrations.keys())
+        self._planner = planner_class(self._versions)
+
+        # TODO(auri): loader.warnings
+        if self.loader.errors:
+            # TODO(auri): something more pretty
+            raise LoadFailed(self.loader.errors)
+
+    def up(self, target=None, isolation_level=None, num_retries=0):
+        if target is None:
+            target = self._versions[-1]
+
+        return self._migrate(
+            target,
+            isolation_level=isolation_level,
+            num_retries=num_retries,
+        )
+
+    def down(self, target=None, isolation_level=None, num_retries=0):
+        if target is None:
+            target = -1
+
+        return self._migrate(
+            target,
+            isolation_level=isolation_level,
+            num_retries=num_retries,
+        )
+
+    def _migrate(self, target, *, isolation_level, num_retries):
+        with self.connection_factory() as conn:
+            conn.set_session(autocommit=True)
+            self._log.debug("creating history table if not exists")
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS __kirameki_history__ (
+                        version integer PRIMARY KEY,
+                        applied_on timestamp DEFAULT (now() at time zone 'utc') NOT NULL
+                    )
+                    """
+                )
+            conn.set_session(autocommit=False, isolation_level=isolation_level)
+            retry = num_retries + 1
+            while retry:
+                self._log.info("attempt #%s", num_retries - retry + 1)
+                with conn.cursor() as cur:
+                    self._log.info(
+                        "acquiring access exclusive lock on history table"
+                    )
+                    cur.execute(
+                        "LOCK TABLE __kirameki_history__ IN ACCESS EXCLUSIVE MODE"
+                    )
+                    cur.execute("SELECT version FROM __kirameki_history__")
+                    state = [v for (v,) in cur]
+                    plan, direction, cur, tgt = self._planner.plan(
+                        state, target
+                    )
+                    self._log.info("migrating from %s to %s", cur, tgt)
+                    if direction is PlanDirection.FORWARD:
+                        step = self._apply_forwards
+                    elif direction is PlanDirection.BACKWARD:
+                        step = self._apply_backwards
+                        for ver in plan:
+                            if not self._migrations[ver].downable:
+                                raise PlanningError(
+                                    "cannot proceed: version {} is not downable".format(
+                                        ver
+                                    )
+                                )
+                    elif direction is PlanDirection.UNCHANGED:
+                        return
+                    else:  # pragma: no cover
+                        raise RuntimeError("???")
+                    try:
+                        for ver in plan:
+                            m = self._migrations[ver]
+                            step(conn, m)
+                    except Exception:
+                        conn.rollback()
+                        raise
+                    try:
+                        conn.commit()
+                    except errors.SerializationFailure:
+                        self._log.warning("serialization failure, retrying...")
+                        retry -= 1
+                        conn.rollback()
+                        continue
+                    break
+
+    def _apply_forwards(self, conn, m):
+        self._log.info("up %s", m.version)
+        m.up(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO __kirameki_history__ (
+                    version
+                )
+                VALUES (%s)
+                """,
+                (m.version,),
+            )
+
+    def _apply_backwards(self, conn, m):
+        self._log.info("down %s", m.version)
+        m.down(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM  __kirameki_history__
+                WHERE version = %s
+                """,
+                (m.version,),
+            )

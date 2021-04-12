@@ -62,23 +62,21 @@ def test_simple_planner():
     planner = migrate.SimplePlanner(migrations)
 
     with pytest.raises(migrate.UnknownMigrationError, match="42"):
-        planner.plan([1, 2, 3, 42])
+        planner.plan([1, 2, 3, 42], 8)
 
     with pytest.raises(migrate.StateHoleError, match="2"):
-        planner.plan([1, 3, 4, 5])
+        planner.plan([1, 3, 4, 5], 8)
 
     state = migrations
     assert (
-        planner.plan(state)
-        == planner.plan(state, 8)
+        planner.plan(state, 8)
         == planner.plan(state, math.inf)
         == ([], migrate.PlanDirection.UNCHANGED, 8, 8)
     )
 
     state = migrations[:-2]
     assert (
-        planner.plan(state)
-        == planner.plan(state, 8)
+        planner.plan(state, 8)
         == planner.plan(state, math.inf)
         == (migrations[-2:], migrate.PlanDirection.FORWARD, 6, 8)
     )
