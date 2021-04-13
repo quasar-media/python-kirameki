@@ -433,6 +433,7 @@ class Migrate:
                     """
                     CREATE TABLE IF NOT EXISTS __kirameki_history__ (
                         version integer PRIMARY KEY,
+                        sha256 character(64) NOT NULL,
                         applied_on timestamp DEFAULT (now() at time zone 'utc') NOT NULL
                     )
                     """
@@ -504,11 +505,12 @@ class Migrate:
             cur.execute(
                 """
                 INSERT INTO __kirameki_history__ (
-                    version
+                    version,
+                    sha256
                 )
-                VALUES (%s)
+                VALUES (%s, %s)
                 """,
-                (m.version,),
+                (m.version, m.sha256),
             )
 
     def _apply_backwards(self, conn, m):
