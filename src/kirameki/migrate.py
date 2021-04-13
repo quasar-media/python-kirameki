@@ -1,6 +1,7 @@
 import collections
 import enum
 import hashlib
+import itertools
 import logging
 import os
 import os.path
@@ -32,24 +33,6 @@ class Migration:
         return s.format(self.version)
 
 
-class _LoadFault:
-    def __init__(self, msg, name):
-        super().__init__(msg, name)
-        self.msg = msg
-        self.name = name
-
-    def __str__(self):
-        return "{}: {}".format(self.name, self.msg)
-
-
-class LoadError(_LoadFault, Exception):
-    pass
-
-
-class LoadWarning(_LoadFault, Warning):
-    pass
-
-
 class Loader:
     migration_class = Migration
 
@@ -58,26 +41,23 @@ class Loader:
         self.root_path = root_path or self._get_root_path()
         self.errors = collections.OrderedDict()
         self.warnings = collections.OrderedDict()
+        self._fault_count = itertools.count()
 
     def load_all(self):
         raise NotImplementedError()
 
-    def _report_error(self, name, msg, cause=None):
-        e = LoadError(msg, name)
-        e.__cause__ = cause
-        try:
-            errors = self.errors[name]
-        except KeyError:
-            errors = self.errors[name] = []
-        errors.append(e)
+    def _report_error(self, file, msg):
+        self._append_fault(self.errors, file, msg)
 
-    def _report_warning(self, name, msg):
-        w = LoadWarning(msg, name)
+    def _report_warning(self, file, msg):
+        self._append_fault(self.warnings, file, msg)
+
+    def _append_fault(self, holder, file, msg):
         try:
-            warnings = self.warnings[name]
+            faults = holder[file]
         except KeyError:
-            warnings = self.warnings[name] = []
-        warnings.append(w)
+            faults = holder[file] = []
+        faults.append((next(self._fault_count), msg))
 
     def _get_root_path(self):
         try:
