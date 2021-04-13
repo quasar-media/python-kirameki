@@ -1,3 +1,4 @@
+import argparse
 import collections
 import enum
 import hashlib
@@ -7,6 +8,7 @@ import os
 import os.path
 import pkgutil
 import re
+import shutil
 import sys
 
 from psycopg2 import errors
@@ -232,8 +234,113 @@ class SimplePlanner(Planner):
         return state[-1]
 
 
+class _CLI:
+    def __init__(self, m, prog=None):
+        self.m = m
+        self.prog = prog
+        self.parser = self._create_parser()
+        self.args = None
+
+    def up_cmd(self):
+        # TODO(auri): pretty plan errors
+        self.m.up(
+            target=self.args.target,
+            isolation_level=self.args.isolation_level,
+            num_retries=self.args.num_retries,
+            progress_callback=self._progress_callback,
+        )
+        return 0
+
+    def down_cmd(self):
+        self.m.down(
+            target=self.args.target,
+            isolation_level=self.args.isolation_level,
+            num_retries=self.args.num_retries,
+            progress_callback=self._progress_callback,
+        )
+        return 0
+
+    def _progress_callback(self, version, state):
+        if self.args.progress:
+            self._printerr("{}: {}", version, "OK" if state else "FAIL")
+
+    def _printerr(self, msg, *args):
+        print(msg.format(*args), file=sys.stderr)
+
+    def _create_parser(self):
+        parser = argparse.ArgumentParser(
+            prog=self.prog
+            or "{} -m {}".format(self._get_python(), self.m.import_name),
+            description="Manage migrations and database state.",
+        )
+        parser.add_argument(
+            "--progress",
+            default=False,
+            action="store_const",
+            const=True,
+            help="display progress (default: no)",
+        )
+        parser.add_argument(
+            "--isolation-level",
+            default="default",
+            type=str,
+            help="transaction isolation level (default: database default)",
+        )
+        parser.add_argument(
+            "--num-retries",
+            default=0,
+            type=int,
+            help="number of times to retry serialization (default: 0)",
+        )
+
+        subparsers = parser.add_subparsers(
+            title="Commands", dest="COMMAND", required=True
+        )
+
+        up = subparsers.add_parser("up")
+        up.add_argument(
+            "target",
+            metavar="TARGET",
+            default=None,
+            type=int,
+            nargs="?",
+            help="target version (default: latest)",
+        )
+
+        down = subparsers.add_parser("down")
+        down.add_argument(
+            "target",
+            metavar="target",
+            default=None,
+            type=int,
+            help="target version",
+        )
+
+        return parser
+
+    def _get_python(self):
+        exe = sys.executable
+        for python in ("python", "python3", os.path.basename(exe)):
+            if os.path.realpath(shutil.which(python)) == os.path.realpath(exe):
+                return python
+        return exe
+
+    def __call__(self, args=None):
+        self.m.load()
+        self.args = self.parser.parse_args(args)
+        return getattr(self, self.args.COMMAND + "_cmd")()
+
+
 class LoadFailed(RuntimeError):
-    pass
+    def __init__(self, msg, *, errors, warnings):
+        super().__init__(msg, errors, warnings)
+        self.msg = msg
+        self.errors = errors
+        self.warnings = warnings
+
+    def __str__(self):
+        # TODO(auri): format self.errors
+        return self.msg
 
 
 class Migrate:
@@ -257,16 +364,33 @@ class Migrate:
         self._planner = None
 
     def load(self):
+        if self._migrations is not None:
+            return False
+
         self._migrations = {m.version: m for m in self.loader.load_all()}
         self._versions = list(self._migrations.keys())
         self._planner = self.planner_class(self._versions)
 
-        # TODO(auri): loader.warnings
         if self.loader.errors:
-            # TODO(auri): something prettier
-            raise LoadFailed(self.loader.errors)
+            raise LoadFailed(
+                "load failed",
+                errors=self.loader.errors,
+                warnings=self.loader.warnings,
+            )
 
-    def up(self, target=None, isolation_level=None, num_retries=0):
+        return True
+
+    def run_cli(self, args=None, **kwargs):
+        cli = _CLI(self, **kwargs)
+        sys.exit(cli(args))
+
+    def up(
+        self,
+        target=None,
+        isolation_level=None,
+        num_retries=0,
+        progress_callback=None,
+    ):
         self._check_loaded()
 
         if target is None:
@@ -276,9 +400,16 @@ class Migrate:
             target,
             isolation_level=isolation_level,
             num_retries=num_retries,
+            progress_callback=progress_callback,
         )
 
-    def down(self, target=None, isolation_level=None, num_retries=0):
+    def down(
+        self,
+        target=None,
+        isolation_level=None,
+        num_retries=0,
+        progress_callback=None,
+    ):
         self._check_loaded()
 
         if target is None:
@@ -288,9 +419,12 @@ class Migrate:
             target,
             isolation_level=isolation_level,
             num_retries=num_retries,
+            progress_callback=progress_callback,
         )
 
-    def _migrate(self, target, *, isolation_level, num_retries):
+    def _migrate(
+        self, target, *, isolation_level, num_retries, progress_callback
+    ):
         with self.connection_factory() as conn:
             conn.set_session(autocommit=True)
             self._log.debug("creating history table if not exists")
@@ -339,7 +473,9 @@ class Migrate:
                         for ver in plan:
                             m = self._migrations[ver]
                             step(conn, m)
+                            self._progress(progress_callback, m.version, True)
                     except Exception:
+                        self._progress(progress_callback, m.version, False)
                         conn.rollback()
                         raise
                     try:
@@ -350,6 +486,16 @@ class Migrate:
                         conn.rollback()
                         continue
                     break
+
+    def _progress(self, progress_callback, *args):
+        if progress_callback is not None:
+            try:
+                progress_callback(*args)
+            except Exception:
+                self._log.error(
+                    "swallowing exception generated by progress_callback",
+                    exc_info=True,
+                )
 
     def _apply_forwards(self, conn, m):
         self._log.info("up %s", m.version)
