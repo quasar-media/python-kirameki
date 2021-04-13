@@ -1,38 +1,19 @@
 import collections
 import enum
-import functools
-import importlib
+import hashlib
 import logging
 import os
 import os.path
 import pkgutil
+import re
 import sys
 
 from psycopg2 import errors
 
 
 class Migration:
-    def __init__(self, version, description=None):
+    def __init__(self, version):
         self.version = version
-        self.description = description
-
-    @classmethod
-    def from_callables(cls, up, down=None, _module=None, **kwargs):
-        def make_wrapper(func):
-            @functools.wraps(func)
-            def wrapper(self, conn):
-                return func(conn)
-
-            return wrapper
-
-        if _module is None:
-            _module = __name__
-
-        ns = {"up": make_wrapper(up), "__module__": _module}
-        if down is not None:
-            ns["down"] = make_wrapper(down)
-        cls_ = type("_synthetic_", (cls,), ns)
-        return cls_(**kwargs)
 
     @property
     def downable(self):
@@ -44,11 +25,11 @@ class Migration:
     down = None
 
     def __repr__(self):
-        s = "<migration version={!r} description={!r} uppable"
+        s = "<migration version={!r} uppable"
         if self.downable:
             s += " downable"
         s += ">"
-        return s.format(self.version, self.description)
+        return s.format(self.version)
 
 
 class _LoadFault:
@@ -72,8 +53,9 @@ class LoadWarning(_LoadFault, Warning):
 class Loader:
     migration_class = Migration
 
-    def __init__(self, import_name):
+    def __init__(self, import_name, root_path=None):
         self.import_name = import_name
+        self.root_path = root_path or self._get_root_path()
         self.errors = collections.OrderedDict()
         self.warnings = collections.OrderedDict()
 
@@ -97,93 +79,6 @@ class Loader:
             warnings = self.warnings[name] = []
         warnings.append(w)
 
-
-class PyLoader(Loader):
-    def __init__(self, *args, root_path=None, migration_pkg=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.root_path = root_path or self._get_root_path()
-        self.migration_pkg = migration_pkg or "migrations"
-
-    def load_all(self):
-        for mod in self._collect_modules():
-            version = self._get_module_attr(
-                mod,
-                "version",
-                True,
-                lambda v: isinstance(v, int),
-                "version must be an int",
-            )
-            description = self._get_module_attr(
-                mod,
-                "description",
-                False,
-                lambda v: isinstance(v, str),
-                "description must be a string",
-            )
-            up = self._get_module_attr(
-                mod, "up", True, callable, "up must be callable"
-            )
-            down = self._get_module_attr(
-                mod, "down", False, callable, "down must be callable"
-            )
-            if version is None or up is None:
-                continue
-            yield self.migration_class.from_callables(
-                up,
-                down,
-                _module=mod.__name__,
-                version=version,
-                description=description,
-            )
-
-    def _get_module_attr(self, mod, name, required, check, check_msg):
-        try:
-            value = getattr(mod, name)
-        except AttributeError as e:
-            if required:
-                self._report_error(
-                    mod.__name__, "must define {}".format(name), cause=e
-                )
-            return None
-        if not check(value):
-            self._report_error(mod.__name__, check_msg)
-            return None
-        return value
-
-    def _collect_modules(self):
-        mdir = os.path.join(self.root_path, self.migration_pkg)
-        if not os.path.isdir(mdir):
-            raise RuntimeError("not a directory: {}".format(mdir))
-
-        import_path = os.path.dirname(self.root_path)
-        sys.path.insert(0, import_path)
-        try:
-            modules = []
-            for modinfo in pkgutil.iter_modules(
-                [mdir],
-                prefix="{}.{}.".format(self.import_name, self.migration_pkg),
-            ):
-                name = modinfo.name
-                if modinfo.ispkg:
-                    self._report_warning(name, "is a package, ignoring")
-                    continue
-                try:
-                    # XXX(auri): if we could avoid this call and instead be
-                    # able to find_spec/module_from_spec/exec_module
-                    # without going around the system cache, it'd be more
-                    # ideal than the sys.path workaround
-                    mod = importlib.import_module(name)
-                except Exception as e:
-                    self._report_error(name, "failed to import", cause=e)
-                    continue
-                modules.append(mod)
-        finally:
-            sys.path.remove(import_path)
-
-        # XXX(auri): this method should always be eagerly evaluated
-        # to ensure we never leave the import_path within sys.path
-        return modules
-
     def _get_root_path(self):
         try:
             module = sys.modules[self.import_name]
@@ -199,6 +94,93 @@ class PyLoader(Loader):
                     "could not deduce root_path; please specify it explicitly"
                 )
         return os.path.abspath(os.path.dirname(fp))
+
+
+class SQLMigration(Migration):
+    def __init__(self, *args, up_sql, sha256, down_sql=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.up_sql = up_sql
+        self.sha256 = sha256
+        self.down_sql = down_sql
+        if down_sql is not None:
+            self.down = self._down
+
+    def up(self, conn):
+        with conn.cursor() as cur:
+            cur.execute(self.up_sql)
+
+    def _down(self, conn):
+        with conn.cursor() as cur:
+            cur.execute(self.down_sql)
+
+
+class SQLLoader(Loader):
+    migration_class = SQLMigration
+
+    _script = collections.namedtuple("_script", "file sha256 source")
+
+    _name_re = re.compile(r"m_(?P<version>[\d_]+)_.+")
+
+    def __init__(self, *args, migration_dir=None, encoding=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.migration_dir = migration_dir or "migrations"
+        self.encoding = encoding or "utf-8"
+
+    def load_all(self):
+        parent = os.path.join(self.root_path, self.migration_dir)
+        scripts = {}
+        for basename in os.listdir(parent):
+            name = os.path.join(parent, basename)
+            if os.path.isdir(name):
+                self._report_warning(name, "is a directory")
+                continue
+            info = self._parse_filename(name, basename)
+            if not info:
+                continue
+            with open(name, "rb") as f:
+                source = f.read()
+                hash = hashlib.sha256(source).hexdigest()
+                source = source.decode(self.encoding)
+            version, is_down = info
+            s = scripts.setdefault(version, [None, None])
+            s[1 if is_down else 0] = self._script(name, hash, source)
+
+        for version, (up, down) in scripts.items():
+            if not up:
+                self._report_error(
+                    down.file, "has no accompanying up migration"
+                )
+                continue
+            kwargs = dict(up_sql=up.source, sha256=up.sha256)
+            if down:
+                kwargs["down_sql"] = down.source
+            yield self.migration_class(version, **kwargs)
+
+    def _parse_filename(self, name, basename):
+        rest, ext = os.path.splitext(basename)
+        if ext != ".sql":
+            self._report_warning(name, "is not a migration (need .sql suffix)")
+            return None
+        is_down = False
+        if rest.endswith(".up"):
+            rest = rest[:-3]
+        elif rest.endswith(".down"):
+            is_down = True
+            rest = rest[:-5]
+        if not rest.isidentifier():
+            self._report_error(name, "is not a Python identifier")
+            return None
+        m = self._name_re.match(rest)
+        if not m:
+            self._report_error(name, "does not conform to name spec")
+            return None
+        version = m.group("version")
+        try:
+            version = int(version, 10)
+        except ValueError:
+            self._report(name, "version is not a valid integer")
+            return None
+        return version, is_down
 
 
 class PlanningError(Exception):
@@ -230,7 +212,7 @@ class Planner:
 class SimplePlanner(Planner):
     def plan(self, state, target):
         target = min(target, self._versions[-1])
-        target = max(target, 0)
+        target = max(target, -1)
 
         current = self._get_current_version(state)
         plan = []
@@ -287,7 +269,7 @@ class Migrate:
     ):
         self.import_name = import_name
         self.connection_factory = connection_factory
-        self.loader = loader or PyLoader(import_name)
+        self.loader = loader or SQLLoader(import_name)
         self.planner_class = planner_class
 
         self._migrations = None
@@ -417,4 +399,6 @@ class Migrate:
 
     def _check_loaded(self):
         if self._migrations is None:
-            raise RuntimeError("call #load() before attempting migration operations")
+            raise RuntimeError(
+                "call #load() before attempting migration operations"
+            )
