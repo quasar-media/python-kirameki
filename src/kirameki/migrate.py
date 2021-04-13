@@ -290,16 +290,23 @@ class Migrate:
         self.loader = loader or PyLoader(import_name)
         self.planner_class = planner_class
 
+        self._migrations = None
+        self._versions = None
+        self._planner = None
+
+    def load(self):
         self._migrations = {m.version: m for m in self.loader.load_all()}
         self._versions = list(self._migrations.keys())
-        self._planner = planner_class(self._versions)
+        self._planner = self.planner_class(self._versions)
 
         # TODO(auri): loader.warnings
         if self.loader.errors:
-            # TODO(auri): something more pretty
+            # TODO(auri): something prettier
             raise LoadFailed(self.loader.errors)
 
     def up(self, target=None, isolation_level=None, num_retries=0):
+        self._check_loaded()
+
         if target is None:
             target = self._versions[-1]
 
@@ -310,6 +317,8 @@ class Migrate:
         )
 
     def down(self, target=None, isolation_level=None, num_retries=0):
+        self._check_loaded()
+
         if target is None:
             target = -1
 
@@ -405,3 +414,7 @@ class Migrate:
                 """,
                 (m.version,),
             )
+
+    def _check_loaded(self):
+        if self._migrations is None:
+            raise RuntimeError("call #load() before attempting migration operations")
