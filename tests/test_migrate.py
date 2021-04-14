@@ -1,4 +1,4 @@
-import math
+import hashlib
 import os
 import os.path
 import pkgutil
@@ -38,42 +38,84 @@ class TestLoader:
             migrate.Loader(__name__)
 
 
-def test_simple_planner():
-    migrations = [1, 2, 3, 4, 5, 6, 7, 8]
-    planner = migrate.SimplePlanner(migrations)
+class TestMigrator:
+    def test_plan_backwards(self, dummy_m):
+        with pytest.raises(migrate.PlanningError, match="unapplied"):
+            next(
+                dummy_m._plan_backwards(
+                    self._create_state(dummy_m, 0), 1618387500
+                )
+            )
+        with pytest.raises(migrate.PlanningError, match="downable"):
+            list(
+                dummy_m._plan_backwards(
+                    self._create_state(dummy_m, 0, 1, 2, 3), -1
+                )
+            )
 
-    with pytest.raises(migrate.UnknownMigrationError, match="42"):
-        planner.plan([1, 2, 3, 42], 8)
+    def test_get_current_version(self, dummy_m):
+        with pytest.raises(migrate.StateIntegrityError, match="unknown"):
+            dummy_m._get_current_version(
+                [*self._create_state(dummy_m, 0), (1, "1")]
+            )
+        with pytest.raises(migrate.StateIntegrityError, match="hole"):
+            dummy_m._get_current_version(self._create_state(dummy_m, 0, 2))
+        with pytest.raises(migrate.StateIntegrityError, match="checksum"):
+            dummy_m._get_current_version(
+                [*self._create_state(dummy_m, 0), (1618387495, "xxx")]
+            )
+        assert dummy_m._get_current_version([]) == -1
+        assert (
+            dummy_m._get_current_version(self._create_state(dummy_m, 0, 1, 2))
+            == 1618387500
+        )
 
-    with pytest.raises(migrate.StateHoleError, match="2"):
-        planner.plan([1, 3, 4, 5], 8)
+    def _create_state(self, migrator, *indices):
+        return [
+            (m.version, m.sha256)
+            for m in migrator.migrations.values()
+            for i in indices
+            if m.version == migrator._versions[i]
+        ]
 
-    state = migrations
-    assert (
-        planner.plan(state, 8)
-        == planner.plan(state, math.inf)
-        == ([], migrate.PlanDirection.UNCHANGED, 8, 8)
-    )
+    @pytest.fixture
+    def dummy_m(self):
+        migrations = [
+            (
+                1618387490,
+                "CREATE TABLE dummy (id serial PRIMARY KEY)",
+                "DROP TABLE dummy",
+            ),
+            (
+                1618387495,
+                "ALTER TABLE foo ADD COLUMN foo text",
+                "ALTER TABLE foo DROP COLUMN name",
+            ),
+            (
+                1618387500,
+                "ALTER TABLE foo ADD COLUMN bar timestamp",
+                None,
+            ),
+            (
+                1618387505,
+                "ALTER TABLE foo ADD COLUMN bar integer",
+                "ALTER TABLE foo DROP COLUMN bar",
+            ),
+        ]
+        return migrate.Migrator(
+            None,
+            [
+                migrate.SQLMigration(
+                    version=version,
+                    up_sql=up_sql,
+                    sha256=hashlib.sha256(up_sql.encode("utf-8")).hexdigest(),
+                    down_sql=down_sql,
+                )
+                for version, up_sql, down_sql in migrations
+            ],
+        )
 
-    state = migrations[:-2]
-    assert (
-        planner.plan(state, 8)
-        == planner.plan(state, math.inf)
-        == (migrations[-2:], migrate.PlanDirection.FORWARD, 6, 8)
-    )
-    assert planner.plan(state, 7) == ([7], migrate.PlanDirection.FORWARD, 6, 7)
-
-    state = migrations
-    assert (
-        planner.plan(state, -1)
-        # TODO(auri): clamp target version to min avail version
-        # == planner.plan(state, 0)
-        == planner.plan(state, -math.inf)
-        == (list(reversed(migrations)), migrate.PlanDirection.BACKWARD, 8, -1)
-    )
-    assert planner.plan(state, 4) == (
-        list(reversed(migrations[-4:])),
-        migrate.PlanDirection.BACKWARD,
-        8,
-        4,
-    )
+    @pytest.fixture
+    def m(self, dummy_m, conn):
+        dummy_m.conn = conn
+        return dummy_m

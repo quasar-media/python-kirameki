@@ -1,6 +1,5 @@
 import argparse
 import collections
-import enum
 import hashlib
 import itertools
 import logging
@@ -10,8 +9,6 @@ import pkgutil
 import re
 import shutil
 import sys
-
-from psycopg2 import errors
 
 
 class Migration:
@@ -165,113 +162,236 @@ class SQLLoader(Loader):
         return version, is_down
 
 
-class PlanningError(Exception):
+class MigrationError(Exception):
     pass
 
 
-class UnknownMigrationError(PlanningError):
+class StateIntegrityError(MigrationError):
     pass
 
 
-class StateHoleError(PlanningError):
+class PlanningError(MigrationError):
     pass
 
 
-class PlanDirection(enum.Enum):
-    BACKWARD = -1
-    UNCHANGED = 0
-    FORWARD = 1
+class Migrator:
+    _log = logging.getLogger(__qualname__)
 
+    def __init__(self, conn, migrations):
+        if not migrations:
+            raise ValueError(
+                "cannot create a migrator out of empty migration set"
+            )
+        self.conn = conn
+        self.migrations = collections.OrderedDict(
+            [
+                (m.version, m)
+                for m in sorted(migrations, key=lambda m: m.version)
+            ]
+        )
 
-class Planner:
-    def __init__(self, versions):
-        self._versions = versions
+        # XXX(auri): assuming the dict is sorted
+        self._versions = list(self.migrations.keys())
 
-    def plan(self, state, target):
-        raise NotImplementedError()
+    def up(self, target=None, **kwargs):
+        if target is None:
+            target = self._versions[-1]
+        return self._migrate(
+            self._plan_forwards, self._apply_forwards, target, **kwargs
+        )
 
+    def down(self, target=None, **kwargs):
+        if target is None:
+            target = self._versions[0]
+        return self._migrate(
+            self._plan_backwards, self._apply_backwards, target, **kwargs
+        )
 
-class SimplePlanner(Planner):
-    def plan(self, state, target):
-        target = min(target, self._versions[-1])
-        target = max(target, -1)
+    def _migrate(
+        self,
+        plan,
+        apply,
+        target,
+        isolation_level="default",
+        dry_run=False,
+        progress_callback=None,
+    ):
+        self.conn.set_session(autocommit=True)
+        self._log.debug("creating history table if it doesn't exist yet")
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS __kirameki_history__ (
+                    version integer PRIMARY KEY,
+                    sha256 character(64) NOT NULL,
+                    applied_on timestamp
+                        DEFAULT (now() at time zone 'utc')
+                        NOT NULL
+                )
+                """
+            )
 
+        self.conn.set_session(
+            autocommit=False, isolation_level=isolation_level
+        )
+        with self.conn.cursor() as cur:
+            self._log.debug("acquiring access exclusive lock on history table")
+            cur.execute(
+                """
+                LOCK TABLE __kirameki_history__
+                IN ACCESS EXCLUSIVE MODE
+                """
+            )
+            cur.execute(
+                """
+                SELECT version, sha256
+                FROM __kirameki_history__
+                ORDER BY version ASC
+                """
+            )
+            state = list(cur)
+
+        affected = [v for (v, _) in state]
+        m = None
+        try:
+            for m in plan(state, target):
+                apply(m)
+                self._progress(progress_callback, m, True)
+            if not dry_run:
+                self.conn.commit()
+        except Exception:
+            if m is not None:
+                self._progress(progress_callback, m, False)
+            raise
+        finally:
+            self.conn.rollback()
+        return affected
+
+    def _progress(self, cb, *args):
+        if cb is None:
+            return
+        try:
+            cb(*args)
+        except Exception:
+            self._log.error("progress_callback raised", exc_info=True)
+
+    def _apply_forwards(self, m):
+        self._log.debug("up %r", m)
+        m.up(self.conn)
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO __kirameki_history__ (version, sha256)
+                VALUES (%s, %s)
+                """,
+                (m.version, m.sha256),
+            )
+
+    def _apply_backwards(self, m):
+        self._log.debug("down %r", m)
+        m.down(self.conn)
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM __kirameki_history__
+                WHERE version = %s
+                """,
+                (m.version,),
+            )
+
+    def _plan_forwards(self, state, target):
         current = self._get_current_version(state)
-        plan = []
-        direction = None
-        if current == target:
-            direction = PlanDirection.UNCHANGED
-        elif target > current:
-            direction = PlanDirection.FORWARD
-            for v in self._versions:
-                if v > current and v <= target:
-                    plan.append(v)
-        else:
-            direction = PlanDirection.BACKWARD
-            for v in reversed(self._versions):
-                if v <= current and v > target:
-                    plan.append(v)
+        for v, m in self.migrations.items():
+            if v > current and v <= target:
+                yield m
 
-        return plan, direction, current, target
+    def _plan_backwards(self, state, target):
+        current = self._get_current_version(state)
+        if target > current:
+            raise PlanningError("requested rollback to unapplied migration")
+        for v, m in reversed(self.migrations.items()):
+            if v <= current and v > target:
+                if not m.downable:
+                    raise PlanningError(
+                        "requested rollback cannot proceed cause version {} "
+                        "is not downable".format(v)
+                    )
+                yield m
 
     def _get_current_version(self, state):
-        if not state:
-            return -1
-
-        version_set = set(self._versions)
-        # First, we verify we know of every single version
-        # contained within the state.
-        for v in state:
-            if v not in version_set:
-                raise UnknownMigrationError(v)
-
-        # Then, we verify that there are no holes within
-        # the state.
-        for their_ver, our_ver in zip(state, self._versions):
+        ver = -1
+        for their_ver, _ in state:
+            if their_ver not in self.migrations:
+                raise StateIntegrityError(
+                    "unknown migration: {}".format(their_ver)
+                )
+        for (their_ver, their_sha256), (our_ver, our_m) in zip(
+            state, self.migrations.items()
+        ):
             if their_ver != our_ver:
-                raise StateHoleError(our_ver)
-
-        return state[-1]
+                raise StateIntegrityError(
+                    "hole in the state: {}".format(our_ver)
+                )
+            ver = our_ver
+            if their_sha256 != our_m.sha256:
+                raise StateIntegrityError(
+                    "checksum mismatch in "
+                    "version {}: {!r} != {!r}".format(
+                        ver, their_sha256, our_m.sha256
+                    )
+                )
+        self._log.debug("current version = %s", ver)
+        return ver
 
 
 class _CLI:
-    def __init__(self, m, prog=None):
+    def __init__(self, m):
         self.m = m
-        self.prog = prog
         self.parser = self._create_parser()
         self.args = None
 
     def up_cmd(self):
-        # TODO(auri): pretty plan errors
-        self.m.up(
-            target=self.args.target,
-            isolation_level=self.args.isolation_level,
-            num_retries=self.args.num_retries,
-            progress_callback=self._progress_callback,
-        )
-        return 0
+        return self._migrate_cmd(self.m.up)
 
     def down_cmd(self):
-        self.m.down(
-            target=self.args.target,
-            isolation_level=self.args.isolation_level,
-            num_retries=self.args.num_retries,
-            progress_callback=self._progress_callback,
-        )
+        return self._migrate_cmd(self.m.down)
+
+    def _migrate_cmd(self, action):
+        def progress(m, success):
+            if self.args.progress:
+                self._printerr(
+                    "{}: {}",
+                    action.__name__ if success else "fail",
+                    m.version,
+                )
+
+        try:
+            action(
+                self.args.target,
+                isolation_level=self.args.isolation_level,
+                dry_run=self.args.dry_run,
+                progress_callback=progress,
+            )
+        except StateIntegrityError as e:
+            self._printerr("database state integrity violation: {}", e)
+            return 1
+        except PlanningError as e:
+            self._printerr("invalid target specified: {}", e)
+            return 1
+        # TODO(auri): consider nicer OperationalErrors?
         return 0
-
-    def _progress_callback(self, version, state):
-        if self.args.progress:
-            self._printerr("{}: {}", version, "OK" if state else "FAIL")
-
-    def _printerr(self, msg, *args):
-        print(msg.format(*args), file=sys.stderr)
 
     def _create_parser(self):
         parser = argparse.ArgumentParser(
-            prog=self.prog
-            or "{} -m {}".format(self._get_python(), self.m.import_name),
+            prog="{} -m {}".format(self._get_python(), self.m.import_name),
             description="Manage migrations and database state.",
+        )
+        parser.add_argument(
+            "-v",
+            "--verbose",
+            default=0,
+            action="count",
+            help="increase verbosity level (default: none)",
         )
         parser.add_argument(
             "--progress",
@@ -281,16 +401,18 @@ class _CLI:
             help="display progress (default: no)",
         )
         parser.add_argument(
+            "-n",
+            "--dry-run",
+            default=False,
+            action="store_const",
+            const=True,
+            help="do not commit changes (default: no)",
+        )
+        parser.add_argument(
             "--isolation-level",
             default="default",
             type=str,
             help="transaction isolation level (default: database default)",
-        )
-        parser.add_argument(
-            "--num-retries",
-            default=0,
-            type=int,
-            help="number of times to retry serialization (default: 0)",
         )
 
         subparsers = parser.add_subparsers(
@@ -310,7 +432,7 @@ class _CLI:
         down = subparsers.add_parser("down")
         down.add_argument(
             "target",
-            metavar="target",
+            metavar="TARGET",
             default=None,
             type=int,
             help="target version",
@@ -325,208 +447,46 @@ class _CLI:
                 return python
         return exe
 
+    def _printerr(self, msg, *args):
+        print(msg.format(*args), file=sys.stderr)
+
     def __call__(self, args=None):
-        self.m.load()
         self.args = self.parser.parse_args(args)
-        return getattr(self, self.args.COMMAND + "_cmd")()
-
-
-class LoadFailed(RuntimeError):
-    def __init__(self, msg, *, errors, warnings):
-        super().__init__(msg, errors, warnings)
-        self.msg = msg
-        self.errors = errors
-        self.warnings = warnings
-
-    def __str__(self):
-        # TODO(auri): format self.errors
-        return self.msg
+        logging.basicConfig(
+            level=max(logging.DEBUG, logging.WARNING - self.args.verbose * 10)
+        )
+        self.m.load()
+        sys.exit(getattr(self, self.args.COMMAND + "_cmd")())
 
 
 class Migrate:
-    _log = logging.getLogger(__qualname__)
+    migrator_class = Migrator
 
-    def __init__(
-        self,
-        import_name,
-        connection_factory,
-        *,
-        loader=None,
-        planner_class=SimplePlanner,
-    ):
+    def __init__(self, import_name, connection_factory):
         self.import_name = import_name
         self.connection_factory = connection_factory
-        self.loader = loader or SQLLoader(import_name)
-        self.planner_class = planner_class
 
         self._migrations = None
-        self._versions = None
-        self._planner = None
 
-    def load(self):
-        if self._migrations is not None:
-            return False
+    def load(self, loader=None):
+        if self._migrations:
+            return
 
-        self._migrations = {m.version: m for m in self.loader.load_all()}
-        self._versions = list(self._migrations.keys())
-        self._planner = self.planner_class(self._versions)
+        loader = loader or SQLLoader(self.import_name)
+        self._migrations = loader.load_all()
 
-        if self.loader.errors:
-            raise LoadFailed(
-                "load failed",
-                errors=self.loader.errors,
-                warnings=self.loader.warnings,
-            )
+    def up(self, *args, **kwargs):
+        return self._migrate("up", *args, **kwargs)
 
-        return True
+    def down(self, *args, **kwargs):
+        return self._migrate("down", *args, **kwargs)
 
-    def run_cli(self, args=None, **kwargs):
-        cli = _CLI(self, **kwargs)
-        sys.exit(cli(args))
+    def run_cli(self, args=None):
+        logging.basicConfig
+        cli = _CLI(self)
+        cli(args)
 
-    def up(
-        self,
-        target=None,
-        isolation_level=None,
-        num_retries=0,
-        progress_callback=None,
-    ):
-        self._check_loaded()
-
-        if target is None:
-            target = self._versions[-1]
-
-        return self._migrate(
-            target,
-            isolation_level=isolation_level,
-            num_retries=num_retries,
-            progress_callback=progress_callback,
-        )
-
-    def down(
-        self,
-        target=None,
-        isolation_level=None,
-        num_retries=0,
-        progress_callback=None,
-    ):
-        self._check_loaded()
-
-        if target is None:
-            target = -1
-
-        return self._migrate(
-            target,
-            isolation_level=isolation_level,
-            num_retries=num_retries,
-            progress_callback=progress_callback,
-        )
-
-    def _migrate(
-        self, target, *, isolation_level, num_retries, progress_callback
-    ):
+    def _migrate(self, meth, *args, **kwargs):
         with self.connection_factory() as conn:
-            conn.set_session(autocommit=True)
-            self._log.debug("creating history table if not exists")
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS __kirameki_history__ (
-                        version integer PRIMARY KEY,
-                        sha256 character(64) NOT NULL,
-                        applied_on timestamp DEFAULT (now() at time zone 'utc') NOT NULL
-                    )
-                    """
-                )
-            conn.set_session(autocommit=False, isolation_level=isolation_level)
-            retry = num_retries + 1
-            while retry:
-                self._log.info("attempt #%s", num_retries - retry + 1)
-                with conn.cursor() as cur:
-                    self._log.info(
-                        "acquiring access exclusive lock on history table"
-                    )
-                    cur.execute(
-                        "LOCK TABLE __kirameki_history__ IN ACCESS EXCLUSIVE MODE"
-                    )
-                    cur.execute("SELECT version FROM __kirameki_history__")
-                    state = [v for (v,) in cur]
-                    plan, direction, cur, tgt = self._planner.plan(
-                        state, target
-                    )
-                    self._log.info("migrating from %s to %s", cur, tgt)
-                    if direction is PlanDirection.FORWARD:
-                        step = self._apply_forwards
-                    elif direction is PlanDirection.BACKWARD:
-                        step = self._apply_backwards
-                        for ver in plan:
-                            if not self._migrations[ver].downable:
-                                raise PlanningError(
-                                    "cannot proceed: version {} is not downable".format(
-                                        ver
-                                    )
-                                )
-                    elif direction is PlanDirection.UNCHANGED:
-                        return
-                    else:  # pragma: no cover
-                        raise RuntimeError("???")
-                    try:
-                        for ver in plan:
-                            m = self._migrations[ver]
-                            step(conn, m)
-                            self._progress(progress_callback, m.version, True)
-                    except Exception:
-                        self._progress(progress_callback, m.version, False)
-                        conn.rollback()
-                        raise
-                    try:
-                        conn.commit()
-                    except errors.SerializationFailure:
-                        self._log.warning("serialization failure, retrying...")
-                        retry -= 1
-                        conn.rollback()
-                        continue
-                    break
-
-    def _progress(self, progress_callback, *args):
-        if progress_callback is not None:
-            try:
-                progress_callback(*args)
-            except Exception:
-                self._log.error(
-                    "swallowing exception generated by progress_callback",
-                    exc_info=True,
-                )
-
-    def _apply_forwards(self, conn, m):
-        self._log.info("up %s", m.version)
-        m.up(conn)
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO __kirameki_history__ (
-                    version,
-                    sha256
-                )
-                VALUES (%s, %s)
-                """,
-                (m.version, m.sha256),
-            )
-
-    def _apply_backwards(self, conn, m):
-        self._log.info("down %s", m.version)
-        m.down(conn)
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                DELETE FROM  __kirameki_history__
-                WHERE version = %s
-                """,
-                (m.version,),
-            )
-
-    def _check_loaded(self):
-        if self._migrations is None:
-            raise RuntimeError(
-                "call #load() before attempting migration operations"
-            )
+            migrator = Migrator(conn, self._migrations)
+            return getattr(migrator, meth)(*args, **kwargs)
