@@ -5,10 +5,13 @@ local_scheme = "no-local-version"
 
 [tool.pytest.ini_options]
 minversion = "6.0"
-addopts = "--showlocals --cov=kirameki --cov-report=html"
+addopts = "--showlocals"
 filterwarnings = ["error"]
 markers = ["conn_args"]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["kirameki"]
 
 [tool.coverage.report]
 exclude_lines = [
@@ -19,6 +22,28 @@ exclude_lines = [
     "if __name__ == .__main__.",
 ]
 
+[tool.tox]
+legacy_tox_ini = """
+[tox]
+minversion = 3.23.0
+isolated_build = true
+envlist = py{37,38,39-cover},htmlcov
+
+[testenv]
+passenv = PG*
+extras = test
+commands = pytest -q {posargs}
+
+[testenv:py39-cover]
+usedevelop = true
+commands = pytest -q --cov --cov-report= {posargs}
+
+[testenv:htmlcov]
+skip_install = true
+deps = coverage[toml]
+commands = coverage html
+"""
+
 [build-system]
-requires = ["setuptools >= 41.0", "wheel", "setuptools_scm[toml] >= 3.4"]
+requires = ["setuptools >= 56.0", "wheel", "setuptools_scm[toml] >= 6.0.0"]
 build-backend = "setuptools.build_meta"
