@@ -3,6 +3,8 @@ import shutil
 import tempfile
 from contextlib import ExitStack, closing
 
+from kirameki import testing
+
 import psycopg2
 import pytest
 
@@ -10,12 +12,18 @@ TEST_ROOT = os.path.dirname(__file__)
 
 
 @pytest.fixture
-def conn(request):
+def _conn_args(request):
     args, kwargs = ("",), {}
     marker = request.node.get_closest_marker("conn_args")
     if marker is not None:
         args += marker.args
         kwargs.update(marker.kwargs)
+    return args, kwargs
+
+
+@pytest.fixture
+def conn(_conn_args):
+    args, kwargs = _conn_args
     with closing(psycopg2.connect(*args, **kwargs)) as conn:
         try:
             yield conn
@@ -27,6 +35,19 @@ def conn(request):
 def cur(conn):
     with conn.cursor() as cur:
         yield cur
+
+
+@pytest.fixture
+def tmpdb(_conn_args):
+    args, kwargs = _conn_args
+    with testing.TemporaryDatabase(*args, **kwargs) as tmpdb:
+        yield tmpdb
+
+
+@pytest.fixture
+def tmpdb_conn(tmpdb):
+    with closing(tmpdb.connect()) as conn:
+        yield conn
 
 
 @pytest.fixture

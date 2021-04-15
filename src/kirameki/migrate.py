@@ -3,6 +3,7 @@ import collections
 import hashlib
 import itertools
 import logging
+import math
 import os
 import os.path
 import pkgutil
@@ -91,6 +92,16 @@ class SQLMigration(Migration):
     def _down(self, conn):
         with conn.cursor() as cur:
             cur.execute(self.down_sql)
+
+    def __eq__(self, other):
+        if not isinstance(other, type(self)):
+            return NotImplemented
+        return (self.version, self.up_sql, self.sha256, self.down_sql) == (
+            self.version,
+            other.up_sql,
+            self.sha256,
+            self.down_sql,
+        )
 
 
 class SQLLoader(Loader):
@@ -202,7 +213,7 @@ class Migrator:
 
     def down(self, target=None, **kwargs):
         if target is None:
-            target = self._versions[0]
+            target = -math.inf
         return self._migrate(
             self._plan_backwards, self._apply_backwards, target, **kwargs
         )
