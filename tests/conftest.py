@@ -1,3 +1,5 @@
+from contextlib import closing
+
 import psycopg2
 import pytest
 
@@ -9,7 +11,7 @@ def conn(request):
     if marker is not None:
         args += marker.args
         kwargs.update(marker.kwargs)
-    with psycopg2.connect(*args, **kwargs) as conn:
+    with closing(psycopg2.connect(*args, **kwargs)) as conn:
         try:
             yield conn
         finally:
