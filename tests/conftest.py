@@ -1,5 +1,6 @@
 import os.path
 import shutil
+import sys
 import tempfile
 from contextlib import ExitStack, closing
 
@@ -52,6 +53,10 @@ def tmpdb_conn(tmpdb):
 
 @pytest.fixture
 def casedirs(request):
+    # XXX(auri): dirs_exist_ok is not present
+    # in python 3.7 and below
+    if sys.hexversion < 0x030800F0:
+        pytest.skip("cannot use casedirs on Python <3.8")
     marker = request.node.get_closest_marker("casedirs")
     if marker is None:
         raise RuntimeError("cannot provide casedirs without casedirs mark")
@@ -61,6 +66,5 @@ def casedirs(request):
             stack.enter_context(tempfile.TemporaryDirectory()) for _ in paths
         ]
         for p, td in zip(paths, tempdirs):
-            # TODO(auri): dirs_exist_ok fails test on python <3.8
             shutil.copytree(p, td, dirs_exist_ok=True)
         yield tempdirs
