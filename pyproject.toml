@@ -5,9 +5,9 @@ local_scheme = "no-local-version"
 
 [tool.pytest.ini_options]
 minversion = "6.0"
-addopts = "--showlocals"
+addopts = "--showlocals --ignore=tests/casefiles"
 filterwarnings = ["error"]
-markers = ["conn_args"]
+markers = ["conn_args", "casedirs"]
 testpaths = ["tests"]
 
 [tool.coverage.run]
