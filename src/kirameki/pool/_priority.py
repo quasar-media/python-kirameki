@@ -85,10 +85,10 @@ class PriorityPool(BasePool):
             with conn.cursor() as cur:
                 cur.execute("DISCARD ALL")
             conn.set_session(
-                isolation_level="default",
-                readonly="default",
-                deferrable="default",
-                autocommit="default",
+                isolation_level=self.default_isolation_level,
+                readonly=self.default_readonly,
+                deferrable=self.default_deferrable,
+                autocommit=self.default_autocommit,
             )
         except:  # noqa:E722
             self._ensure_minconn()
@@ -191,6 +191,21 @@ class PriorityPool(BasePool):
             if self._closed:
                 self._log.debug("pool closed while connecting")
                 conn.close()
+                return
+            try:
+                conn.set_session(
+                    isolation_level=self.default_isolation_level,
+                    readonly=self.default_readonly,
+                    deferrable=self.default_deferrable,
+                    autocommit=self.default_autocommit,
+                )
+            except Exception:
+                # XXX(auri): might fall below minconn here
+                self._log.error(
+                    "fresh connection failed while setting "
+                    "session parameters",
+                    exc_info=True,
+                )
                 return
             self._log.debug("connected")
             created_on = time.monotonic()

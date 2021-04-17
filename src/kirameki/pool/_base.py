@@ -7,10 +7,23 @@ from kirameki.pool import exc
 
 
 class BasePool(metaclass=ABCMeta):
-    def __init__(self, minconn, maxconn, connection_factory):
+    def __init__(
+        self,
+        minconn,
+        maxconn,
+        connection_factory,
+        default_isolation_level="default",
+        default_readonly="default",
+        default_deferrable="default",
+        default_autocommit=False,
+    ):
         self.minconn = minconn
         self.maxconn = maxconn
         self.connection_factory = connection_factory
+        self.default_isolation_level = default_isolation_level
+        self.default_readonly = default_readonly
+        self.default_deferrable = default_deferrable
+        self.default_autocommit = default_autocommit
 
         self._log = logging.getLogger(type(self).__qualname__)
 
