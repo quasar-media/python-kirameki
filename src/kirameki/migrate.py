@@ -1,7 +1,6 @@
 import argparse
 import collections
 import hashlib
-import itertools
 import logging
 import math
 import os
@@ -41,7 +40,6 @@ class Loader:
         self.root_path = root_path or self._get_root_path()
         self.errors = collections.OrderedDict()
         self.warnings = collections.OrderedDict()
-        self._fault_count = itertools.count()
 
     def load_all(self):
         raise NotImplementedError()
@@ -57,7 +55,7 @@ class Loader:
             faults = holder[file]
         except KeyError:
             faults = holder[file] = []
-        faults.append((next(self._fault_count), msg))
+        faults.append(msg)
 
     def _get_root_path(self):
         try:
@@ -470,8 +468,14 @@ class _CLI:
         sys.exit(getattr(self, self.args.COMMAND + "_cmd")())
 
 
+class LoadFailure(RuntimeError):
+    pass
+
+
 class Migrate:
     migrator_class = Migrator
+
+    _log = logging.getLogger(__qualname__)
 
     def __init__(self, import_name, connection_factory):
         self.import_name = import_name
@@ -484,7 +488,16 @@ class Migrate:
             return
 
         loader = loader or SQLLoader(self.import_name)
-        self._migrations = loader.load_all()
+        self._migrations = list(loader.load_all())
+
+        for file, msgs in loader.warnings.items():
+            for msg in msgs:
+                self._log.warning("%s: %s", file, msg)
+        if loader.errors:
+            for file, msgs in loader.errors.items():
+                for msg in msgs:
+                    self._log.error("%s: %s", file, msg)
+            raise LoadFailure("load failed")
 
     def up(self, *args, **kwargs):
         return self._migrate("up", *args, **kwargs)
@@ -493,7 +506,6 @@ class Migrate:
         return self._migrate("down", *args, **kwargs)
 
     def run_cli(self, args=None):
-        logging.basicConfig
         cli = _CLI(self)
         cli(args)
 
