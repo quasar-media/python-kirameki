@@ -1,4 +1,5 @@
 import queue
+import random
 import threading
 import time
 from collections import namedtuple
@@ -168,49 +169,45 @@ class PriorityPool(BasePool):
                 self._log.critical("_in_pending = %r", self._in_pending)
 
     def _unsafe_connect(self):
-        try:
-            self._log.debug("connecting")
-            conn = self.connection_factory()
-        except psycopg2.Error:
-            self._log.error("failed to connect", exc_info=True)
-            if not max(0, self.size() - 1):
-                self._log.critical("stalled")
-
-                def _stalled_close():
-                    if self.closed():
-                        return
-                    try:
-                        self.close()
-                    except Exception:
-                        self._log.critical(
-                            "failed to close stalled pool", exc_info=True
-                        )
-
-                threading.Thread(target=_stalled_close).start()
-        else:
-            if self._closed:
-                self._log.debug("pool closed while connecting")
-                conn.close()
-                return
+        backoff = 1.0
+        num_retries = 5
+        retry = num_retries
+        while retry:
             try:
+                self._log.debug("connecting")
+                conn = self.connection_factory()
                 conn.set_session(
                     isolation_level=self.default_isolation_level,
                     readonly=self.default_readonly,
                     deferrable=self.default_deferrable,
                     autocommit=self.default_autocommit,
                 )
-            except Exception:
-                # XXX(auri): might fall below minconn here
+                break
+            except psycopg2.Error:
+                attempt = num_retries - retry
+                sleep = backoff * 2.0 ** attempt + random.uniform(0, 1)
                 self._log.error(
-                    "fresh connection failed while setting "
-                    "session parameters",
+                    "failed to connect (or returned unhealthy connection), "
+                    "sleeping for %f sec, attempt #%d",
+                    sleep,
+                    attempt,
                     exc_info=True,
                 )
-                return
-            self._log.debug("connected")
-            created_on = time.monotonic()
-            entry = self._entry(created_on, conn)
-            self._queue.put_nowait(entry)
+                time.sleep(sleep)
+                retry -= 1
+        else:
+            self._log.error("failed to connect within %d retries", num_retries)
+            # TODO(auri): should we close pool if stalled?
+            if not min(0, self.size() - 1):
+                self._log.critical("...stalled")
+        if self._closed:
+            self._log.debug("pool closed while connecting")
+            conn.close()
+            return
+        self._log.debug("connected")
+        created_on = time.monotonic()
+        entry = self._entry(created_on, conn)
+        self._queue.put_nowait(entry)
 
 
 __all__ = ["PriorityPool"]
