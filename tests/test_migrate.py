@@ -95,30 +95,35 @@ class TestMigrator:
         with pytest.raises(migrate.PlanningError, match="unapplied"):
             next(
                 dummy_m._plan_backwards(
-                    self._create_state(dummy_m, 0), 1618387500
+                    self._create_state(dummy_m, 0), 1618387500, False
                 )
             )
         with pytest.raises(migrate.PlanningError, match="downable"):
             list(
                 dummy_m._plan_backwards(
-                    self._create_state(dummy_m, 0, 1, 2, 3), -1
+                    self._create_state(dummy_m, 0, 1, 2, 3), -1, False
                 )
             )
 
     def test_get_current_version(self, dummy_m):
+        # TODO: test force=True
         with pytest.raises(migrate.StateIntegrityError, match="unknown"):
             dummy_m._get_current_version(
-                [*self._create_state(dummy_m, 0), (1, "1")]
+                [*self._create_state(dummy_m, 0), (1, "1")], False
             )
         with pytest.raises(migrate.StateIntegrityError, match="hole"):
-            dummy_m._get_current_version(self._create_state(dummy_m, 0, 2))
+            dummy_m._get_current_version(
+                self._create_state(dummy_m, 0, 2), False
+            )
         with pytest.raises(migrate.StateIntegrityError, match="checksum"):
             dummy_m._get_current_version(
-                [*self._create_state(dummy_m, 0), (1618387495, "xxx")]
+                [*self._create_state(dummy_m, 0), (1618387495, "xxx")], False
             )
-        assert dummy_m._get_current_version([]) == -1
+        assert dummy_m._get_current_version([], False) == -1
         assert (
-            dummy_m._get_current_version(self._create_state(dummy_m, 0, 1, 2))
+            dummy_m._get_current_version(
+                self._create_state(dummy_m, 0, 1, 2), False
+            )
             == 1618387500
         )
 

@@ -223,6 +223,7 @@ class Migrator:
         target,
         isolation_level="default",
         dry_run=False,
+        force=False,
         progress_callback=None,
     ):
         self.conn.set_session(autocommit=True)
@@ -263,7 +264,7 @@ class Migrator:
         affected = [v for (v, _) in state]
         m = None
         try:
-            for m in plan(state, target):
+            for m in plan(state, target, force):
                 apply(m)
                 self._progress(progress_callback, m, True)
             if not dry_run:
@@ -308,14 +309,14 @@ class Migrator:
                 (m.version,),
             )
 
-    def _plan_forwards(self, state, target):
-        current = self._get_current_version(state)
+    def _plan_forwards(self, state, target, force):
+        current = self._get_current_version(state, force)
         for v, m in self.migrations.items():
             if v > current and v <= target:
                 yield m
 
-    def _plan_backwards(self, state, target):
-        current = self._get_current_version(state)
+    def _plan_backwards(self, state, target, force):
+        current = self._get_current_version(state, force)
         if target > current:
             raise PlanningError("requested rollback to unapplied migration")
         for v, m in reversed(self.migrations.items()):
@@ -327,28 +328,29 @@ class Migrator:
                     )
                 yield m
 
-    def _get_current_version(self, state):
-        ver = -1
+    def _get_current_version(self, state, force):
         for their_ver, _ in state:
-            if their_ver not in self.migrations:
+            if their_ver not in self.migrations and not force:
                 raise StateIntegrityError(
                     "unknown migration: {}".format(their_ver)
                 )
         for (their_ver, their_sha256), (our_ver, our_m) in zip(
             state, self.migrations.items()
         ):
-            if their_ver != our_ver:
+            if their_ver != our_ver and not force:
                 raise StateIntegrityError(
                     "hole in the state: {}".format(our_ver)
                 )
-            ver = our_ver
-            if their_sha256 != our_m.sha256:
+            if their_sha256 != our_m.sha256 and not force:
                 raise StateIntegrityError(
                     "checksum mismatch in "
                     "version {}: {!r} != {!r}".format(
-                        ver, their_sha256, our_m.sha256
+                        our_ver, their_sha256, our_m.sha256
                     )
                 )
+        ver = -1
+        if state:
+            (ver, _) = state[-1]
         self._log.debug("current version = %s", ver)
         return ver
 
@@ -379,6 +381,7 @@ class _CLI:
                 self.args.target,
                 isolation_level=self.args.isolation_level,
                 dry_run=self.args.dry_run,
+                force=self.args.force,
                 progress_callback=progress,
             )
         except StateIntegrityError as e:
@@ -401,6 +404,13 @@ class _CLI:
             default=0,
             action="count",
             help="increase verbosity level (default: none)",
+        )
+        parser.add_argument(
+            "--force",
+            default=False,
+            action="store_const",
+            const=True,
+            help="forcefully perform migration (default: no)",
         )
         parser.add_argument(
             "--progress",
