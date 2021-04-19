@@ -406,6 +406,7 @@ class _CLI:
             help="increase verbosity level (default: none)",
         )
         parser.add_argument(
+            "-f",
             "--force",
             default=False,
             action="store_const",
