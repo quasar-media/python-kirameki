@@ -9,8 +9,9 @@ DEFAULT_CREATEDB_STMT = "CREATE DATABASE {table}"
 
 
 class TemporaryDatabase:
-    def __init__(self, _conn, createdb_stmt=None):
+    def __init__(self, _conn, createdb_stmt=None, createdb_vars=()):
         self.createdb_stmt = createdb_stmt or DEFAULT_CREATEDB_STMT
+        self.createdb_vars = createdb_vars
 
         self._name = None
         self._conn = _conn
@@ -38,7 +39,10 @@ class TemporaryDatabase:
                 with set_session(
                     self._conn, autocommit=True
                 ), self._conn.cursor() as cur:
-                    cur.execute(self.createdb_stmt.format(table=self._qname))
+                    cur.execute(
+                        self.createdb_stmt.format(table=self._qname),
+                        self.createdb_vars,
+                    )
                 break
             except errors.DuplicateDatabase:
                 pass
