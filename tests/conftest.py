@@ -4,10 +4,10 @@ import sys
 import tempfile
 from contextlib import ExitStack, closing
 
-from kirameki import testing
-
 import psycopg2
 import pytest
+
+from kirameki import testing
 
 TEST_ROOT = os.path.dirname(__file__)
 
@@ -39,9 +39,8 @@ def cur(conn):
 
 
 @pytest.fixture
-def tmpdb(_conn_args):
-    args, kwargs = _conn_args
-    with testing.TemporaryDatabase(*args, **kwargs) as tmpdb:
+def tmpdb(conn):
+    with testing.TemporaryDatabase(conn) as tmpdb:
         yield tmpdb
 
 

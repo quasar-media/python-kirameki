@@ -7,13 +7,11 @@ DEFAULT_CREATEDB_STMT = "CREATE DATABASE {table}"
 
 
 class TemporaryDatabase:
-    def __init__(self, *args, createdb_stmt=None, dbname=None, **kwargs):
-        self.args = args
-        self.kwargs = kwargs
+    def __init__(self, _conn, createdb_stmt=None):
         self.createdb_stmt = createdb_stmt or DEFAULT_CREATEDB_STMT
 
         self._name = None
-        self._conn = psycopg2.connect(*args, dbname=dbname, **kwargs)
+        self._conn = _conn
         self._conn.set_session(autocommit=True)
 
     @property
@@ -47,9 +45,10 @@ class TemporaryDatabase:
             raise RuntimeError("no database")
         if "dbname" in kwargs:
             raise RuntimeError("dbname not allowed")
-        return psycopg2.connect(
-            *self.args, dbname=self._name, **{**self.kwargs, **kwargs}
-        )
+        dsnargs = self._conn.info.dsn_parameters
+        dsnargs.update(password=self._conn.info.password, dbname=self._name)
+        dsnargs.update(kwargs)
+        return psycopg2.connect(**dsnargs)
 
     def dropdb(self):
         if self._name is None:
@@ -67,7 +66,6 @@ class TemporaryDatabase:
 
     def close(self):
         self.dropdb()
-        self._conn.close()
         self._conn = None
 
     def _check_closed(self):
