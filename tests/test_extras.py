@@ -9,7 +9,7 @@ from psycopg2.extensions import (
 )
 
 from kirameki import exc
-from kirameki.extras import SimpleConnection
+from kirameki.extras import SimpleConnection, set_session
 
 
 @pytest.mark.conn_args(connection_factory=SimpleConnection)
@@ -104,3 +104,11 @@ class TestSimpleConnection:
 
         with pytest.warns(exc.KiramekiWarning, match="more than one"):
             conn.query_one("SELECT generate_series(0, 10)")
+
+
+def test_set_session(conn):
+    # TODO(auri): test other parameters as well?
+    assert not conn.autocommit
+    with set_session(conn, autocommit=True):
+        assert conn.autocommit
+    assert not conn.autocommit

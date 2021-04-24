@@ -223,3 +223,13 @@ class SimpleConnectionMixin:
 
 class SimpleConnection(extensions.connection, SimpleConnectionMixin):
     pass
+
+
+@contextmanager
+def set_session(conn, **kwargs):
+    stateargs = {k: getattr(conn, k) for k in kwargs}
+    conn.set_session(**kwargs)
+    try:
+        yield
+    finally:
+        conn.set_session(**stateargs)
