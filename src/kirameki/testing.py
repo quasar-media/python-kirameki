@@ -3,6 +3,8 @@ import uuid
 import psycopg2
 from psycopg2 import errors, extensions
 
+from kirameki.extras import set_session
+
 DEFAULT_CREATEDB_STMT = "CREATE DATABASE {table}"
 
 
@@ -12,7 +14,6 @@ class TemporaryDatabase:
 
         self._name = None
         self._conn = _conn
-        self._conn.set_session(autocommit=True)
 
     @property
     def closed(self):
@@ -34,7 +35,9 @@ class TemporaryDatabase:
         while True:
             self._name = uuid.uuid4().hex
             try:
-                with self._conn.cursor() as cur:
+                with set_session(
+                    self._conn, autocommit=True
+                ), self._conn.cursor() as cur:
                     cur.execute(self.createdb_stmt.format(table=self._qname))
                 break
             except errors.DuplicateDatabase:
@@ -55,7 +58,9 @@ class TemporaryDatabase:
             return
         self._check_closed()
         try:
-            with self._conn.cursor() as cur:
+            with set_session(
+                self._conn, autocommit=True
+            ), self._conn.cursor() as cur:
                 cur.execute("DROP DATABASE {}".format(self._qname))
         except errors.ObjectInUse:
             raise RuntimeError(

@@ -10,10 +10,11 @@ def test_temporary_database(conn, cur):
         with closing(tmpdb.connect()) as conn_:
             assert conn_.info.dbname == tmpdb.name
         name = tmpdb.name
-    cur.execute(
-        "SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (name,)
-    )
-    assert not cur.fetchone()
+    with conn:
+        cur.execute(
+            "SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (name,)
+        )
+        assert not cur.fetchone()
 
     with testing.TemporaryDatabase(conn) as tmpdb:
         with pytest.raises(RuntimeError, match="dbname"):
