@@ -5,7 +5,7 @@ from psycopg2 import errors, extensions
 
 from kirameki.extras import set_session
 
-DEFAULT_CREATEDB_STMT = "CREATE DATABASE {table}"
+DEFAULT_CREATEDB_STMT = "CREATE DATABASE {name}"
 
 
 class TemporaryDatabase:
@@ -40,7 +40,7 @@ class TemporaryDatabase:
                     self._conn, autocommit=True
                 ), self._conn.cursor() as cur:
                     cur.execute(
-                        self.createdb_stmt.format(table=self._qname),
+                        self.createdb_stmt.format(name=self._qname),
                         self.createdb_vars,
                     )
                 break
@@ -53,7 +53,12 @@ class TemporaryDatabase:
         if "dbname" in kwargs:
             raise RuntimeError("dbname not allowed")
         dsnargs = self._conn.info.dsn_parameters
-        dsnargs.update(password=self._conn.info.password, dbname=self._name)
+        dsnargs.update(
+            password=self._conn.info.password,
+            dbname=self._name,
+            connection_factory=type(self._conn),
+            cursor_factory=self._conn.cursor_factory,
+        )
         dsnargs.update(kwargs)
         return psycopg2.connect(**dsnargs)
 
