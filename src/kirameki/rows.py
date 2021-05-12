@@ -22,6 +22,19 @@ class row(tuple):
         except LookupError:
             return default
 
+    def map(self, e=(), **kwargs):
+        m = dict(e)
+        m.update(kwargs)
+
+        def _mapper(k, v):
+            f = m.get(k)
+            if f is None:
+                return v
+            return f(v)
+
+        row_ = tuple(map(_mapper, self._columns, self))
+        return type(self)(row_, columns=self._columns)
+
     def __str__(self):  # pragma: no cover
         return "<{} object at 0x{:x}>".format(type(self).__name__, id(self))
 

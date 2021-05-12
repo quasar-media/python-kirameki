@@ -1,6 +1,6 @@
 import pytest
 
-from kirameki.rows import RowCursor
+from kirameki.rows import RowCursor, row as _row
 
 
 @pytest.mark.conn_args(cursor_factory=RowCursor)
@@ -45,3 +45,25 @@ def test_row_cursor(cur):
     rows = list(cur)
     assert rows[0].as_dict() == {"y": 5}
     assert rows == [(5,), (6,), (7,)]
+
+
+def test_row_map():
+    row = _row((1, 2, "foo"), columns=("one", "two", "bar"))
+
+    assert row.map([("two", lambda x: x + 1)]).as_dict() == {
+        "one": 1,
+        "two": 3,
+        "bar": "foo",
+    }
+
+    assert row.map(one=lambda x: x + 2).as_dict() == {
+        "one": 3,
+        "two": 2,
+        "bar": "foo",
+    }
+
+    assert row.map([("two", lambda _: 1337)], two=lambda _: 42).as_dict() == {
+        "one": 1,
+        "two": 42,
+        "bar": "foo",
+    }
