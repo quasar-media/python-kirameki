@@ -1,7 +1,6 @@
-[tool.setuptools_scm]
-write_to = "src/kirameki/_version.py"
-version_scheme = "python-simplified-semver"
-local_scheme = "no-local-version"
+[build-system]
+requires = ["setuptools >= 56.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
 minversion = "6.0"
@@ -43,7 +42,3 @@ skip_install = true
 deps = coverage[toml]
 commands = coverage html
 """
-
-[build-system]
-requires = ["setuptools >= 56.0", "wheel", "setuptools_scm[toml] >= 6.0.0"]
-build-backend = "setuptools.build_meta"

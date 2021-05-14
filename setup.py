@@ -1,8 +1,13 @@
+import sys
 from os import path
 from setuptools import find_packages, setup
 
 PROJECT_ROOT = path.abspath(path.dirname(__file__))
 SOURCE_ROOT = path.join(PROJECT_ROOT, "src")
+
+sys.path.insert(0, SOURCE_ROOT)
+
+from kirameki import __about__  # noqa isort:skip
 
 install_requires = ["psycopg2 ~= 2.8.6"]
 
@@ -10,7 +15,7 @@ extras_require = {"test": ["pytest == 6.2.3", "pytest-cov == 2.11.1"]}
 
 setup(
     name="kirameki",
-    use_scm_version=True,
+    version=__about__.__version__,
     author="Auri",
     author_email="me@aurieh.me",
     url="https://github.com/quasar-media/kirameki",
