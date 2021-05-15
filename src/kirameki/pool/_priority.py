@@ -15,8 +15,8 @@ from kirameki.pool._base import BasePool
 class PriorityPool(BasePool):
     _entry = namedtuple("_entry", "created_on conn")
 
-    def __init__(self, *args, stale_timeout=None, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, stale_timeout=None, **kwargs):
+        super().__init__(**kwargs)
         self.stale_timeout = stale_timeout
 
     # begin pool interface

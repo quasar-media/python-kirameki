@@ -9,6 +9,7 @@ from kirameki.pool import exc
 class BasePool(metaclass=ABCMeta):
     def __init__(
         self,
+        *,
         minconn,
         maxconn,
         connection_factory,
