@@ -25,11 +25,14 @@ def _conn_args(request):
 @pytest.fixture
 def conn(_conn_args):
     args, kwargs = _conn_args
-    with closing(psycopg2.connect(*args, **kwargs)) as conn:
-        try:
-            yield conn
-        finally:
-            conn.rollback()
+    try:
+        with closing(psycopg2.connect(*args, **kwargs)) as conn:
+            try:
+                yield conn
+            finally:
+                conn.rollback()
+    except psycopg2.OperationalError:
+        pytest.skip("operational error, postgres not available")
 
 
 @pytest.fixture
