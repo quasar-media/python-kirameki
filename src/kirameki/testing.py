@@ -47,20 +47,27 @@ class TemporaryDatabase:
             except errors.DuplicateDatabase:
                 pass
 
-    def connect(self, **kwargs):
+    def dsn_parameters(self, **kwargs):
         if self._name is None:
             raise RuntimeError("no database")
         if "dbname" in kwargs:
             raise RuntimeError("dbname not allowed")
-        dsnargs = self._conn.info.dsn_parameters
-        dsnargs.update(
+        dsn_parameters = self._conn.info.dsn_parameters
+        dsn_parameters.update(
             password=self._conn.info.password,
             dbname=self._name,
-            connection_factory=type(self._conn),
-            cursor_factory=self._conn.cursor_factory,
         )
-        dsnargs.update(kwargs)
-        return psycopg2.connect(**dsnargs)
+        dsn_parameters.update(kwargs)
+        return dsn_parameters
+
+    def dsn(self, **kwargs):
+        return extensions.make_dsn(**self.dsn_parameters(**kwargs))
+
+    def connect(self, **kwargs):
+        kwds = self.dsn_parameters(**kwargs)
+        kwds.setdefault("connection_factory", type(self._conn))
+        kwds.setdefault("cursor_factory", self._conn.cursor_factory)
+        return psycopg2.connect(**kwds)
 
     def dropdb(self):
         if self._name is None:
