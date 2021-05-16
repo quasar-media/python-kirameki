@@ -1,5 +1,6 @@
 import sys
 from os import path
+
 from setuptools import find_packages, setup
 
 PROJECT_ROOT = path.abspath(path.dirname(__file__))
@@ -11,7 +12,14 @@ from kirameki import __about__  # noqa isort:skip
 
 install_requires = ["psycopg2 ~= 2.8.6"]
 
-extras_require = {"test": ["pytest == 6.2.3", "pytest-cov == 2.11.1"]}
+extras_require = {
+    "test": [
+        "pytest == 6.2.3",
+        "pytest-cov == 2.11.1",
+        "pytest-mock == 3.6.1",
+    ],
+    "flask": ["Flask"],
+}
 
 setup(
     name="kirameki",
