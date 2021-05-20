@@ -47,11 +47,8 @@ class Parser:
         self.queries = []
         self._cur_def = None
         self._cur_lines = None
-        self._fp = None
 
     def parse(self, fp):
-        self._fp = fp
-
         for line in fp.readlines():
             if line.startswith("--"):
                 if self._try_def_line(line):
