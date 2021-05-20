@@ -60,8 +60,7 @@ class Parser:
             elif line.strip():
                 raise ValueError("non-meta line before :def")
 
-        if self._cur_def:
-            self._flush_cur()
+        self._flush_cur()
 
         return self.queries
 
@@ -69,8 +68,9 @@ class Parser:
         v = def_line(s)
         if not v:
             return False
-        if self._cur_def:
-            self._flush_cur()
+
+        self._flush_cur()
+
         name, params, defaults = v
         self._cur_def = {
             "name": name,
@@ -78,20 +78,27 @@ class Parser:
             "defaults": defaults,
         }
         self._cur_lines = []
+
         return True
 
     def _try_returns_line(self, s):
         v = returns_line(s)
         if not v:
             return False
+
         if not self._cur_def:
             raise ValueError(":returns must follow :def")
         if "returns" in self._cur_def:
             raise ValueError("multiple :returns")
+
         self._cur_def["returns"] = v
+
         return True
 
     def _flush_cur(self):
+        if not self._cur_def:
+            return
+
         self._cur_def.setdefault("returns", ReturnType.CURSOR)
         script = "".join(self._cur_lines).rstrip()
         script = translate_placeholders(script)
