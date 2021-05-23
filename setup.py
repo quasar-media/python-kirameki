@@ -18,6 +18,7 @@ extras_require = {
         "pytest-cov == 2.11.1",
         "pytest-mock == 3.6.1",
     ],
+    "docs": ["Sphinx == 4.0.2", "sphinx-rtd-theme"],
     "flask": ["Flask"],
 }
 
