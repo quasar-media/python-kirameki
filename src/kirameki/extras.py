@@ -24,7 +24,7 @@ class _TransactionMixin:
         self.rollback()
 
 
-class _Savepoint(_TransactionMixin):
+class Savepoint(_TransactionMixin):
     __slots__ = (
         "isolation_level",
         "readonly",
@@ -61,8 +61,8 @@ class _Savepoint(_TransactionMixin):
         self._conn.execute("ROLLBACK TO SAVEPOINT {}".format(self._ident))
 
 
-class _Transaction(_TransactionMixin):
-    savepoint_class = _Savepoint
+class Transaction(_TransactionMixin):
+    savepoint_class = Savepoint
 
     __slots__ = (
         "isolation_level",
@@ -136,7 +136,7 @@ class _Transaction(_TransactionMixin):
 
 
 class SimpleConnectionMixin:
-    transaction_class = _Transaction
+    transaction_class = Transaction
 
     def transaction(
         self,
