@@ -29,18 +29,9 @@ class Savepoint(_TransactionMixin):
     """A savepoint context manager.
     """
 
-    __slots__ = (
-        "isolation_level",
-        "readonly",
-        "deferrable",
-        "_conn",
-        "_ident",
-    )
+    __slots__ = ("_conn", "_ident")
 
-    def __init__(self, conn, name, isolation_level, readonly, deferrable):
-        self.isolation_level = isolation_level
-        self.readonly = readonly
-        self.deferrable = deferrable
+    def __init__(self, conn, name):
         self._conn = conn
         self._ident = extensions.quote_ident(name, conn)
 
@@ -51,13 +42,7 @@ class Savepoint(_TransactionMixin):
         :type name: str
         """
 
-        return type(self)(
-            self._conn,
-            name,
-            self.isolation_level,
-            self.readonly,
-            self.deferrable,
-        )
+        return type(self)(self._conn, name)
 
     def begin(self):
         """Create a savepoint. You should only call this method after
@@ -122,13 +107,7 @@ class Transaction(_TransactionMixin):
         :returns: a savepoint control object that is also a context manager
         """
 
-        return self.savepoint_class(
-            self._conn,
-            name,
-            self.isolation_level,
-            self.readonly,
-            self.deferrable,
-        )
+        return self.savepoint_class(self._conn, name)
 
     def begin(self):
         """Begin a transaction block. You should only call this method after
