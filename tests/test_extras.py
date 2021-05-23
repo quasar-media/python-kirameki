@@ -3,7 +3,6 @@ import pytest
 from psycopg2.extensions import (
     ISOLATION_LEVEL_AUTOCOMMIT,
     ISOLATION_LEVEL_READ_COMMITTED,
-    ISOLATION_LEVEL_REPEATABLE_READ,
     ISOLATION_LEVEL_SERIALIZABLE,
     quote_ident,
 )
@@ -14,31 +13,21 @@ from kirameki.extras import SimpleConnection, set_session
 
 @pytest.mark.conn_args(connection_factory=SimpleConnection)
 class TestSimpleConnection:
-    def test_atomic(self, conn):
+    def test_transaction(self, conn):
         with pytest.raises(psycopg2.OperationalError, match="autocommit"):
-            with conn.atomic(isolation_level=ISOLATION_LEVEL_AUTOCOMMIT):
+            with conn.transaction(isolation_level=ISOLATION_LEVEL_AUTOCOMMIT):
                 pass
-
-        for k, v in [
-            ("isolation_level", ISOLATION_LEVEL_REPEATABLE_READ),
-            ("readonly", True),
-            ("deferrable", True),
-        ]:
-            with pytest.warns(exc.KiramekiWarning, match="characteristic"):
-                with conn.atomic():
-                    with conn.atomic(**{k: v}):
-                        pass
 
         conn.set_session(autocommit=False)
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
         with pytest.raises(psycopg2.OperationalError, match="in progress"):
-            with conn.atomic():
+            with conn.transaction():
                 pass
         conn.rollback()
 
         conn.set_session(autocommit=True)
-        with conn.atomic():
+        with conn.transaction():
             assert not conn.autocommit
         assert conn.autocommit
 
@@ -48,20 +37,20 @@ class TestSimpleConnection:
             readonly=False,
             deferrable=False,
         )
-        with conn.atomic(isolation_level=ISOLATION_LEVEL_READ_COMMITTED):
+        with conn.transaction(isolation_level=ISOLATION_LEVEL_READ_COMMITTED):
             assert conn.isolation_level == ISOLATION_LEVEL_READ_COMMITTED
         assert conn.isolation_level == ISOLATION_LEVEL_SERIALIZABLE
 
-        with conn.atomic(readonly=True, deferrable=True):
+        with conn.transaction(readonly=True, deferrable=True):
             assert conn.isolation_level == ISOLATION_LEVEL_SERIALIZABLE
             assert conn.readonly and conn.deferrable
         assert not conn.readonly and not conn.deferrable
 
-        with conn.atomic():
+        with conn.transaction() as txn:
             conn.execute("SET SESSION public.foo TO 42")
-            with conn.atomic() as sp:
+            with txn.savepoint("sp") as sp:
                 conn.execute("SET SESSION public.bar TO 1337")
-                with sp.savepoint("sp2"):
+                with txn.savepoint("sp2"):
                     conn.execute("SET SESSION public.baz TO 0")
                 (baz,) = conn.query_one("SHOW public.baz")
                 assert baz == ""
@@ -69,7 +58,7 @@ class TestSimpleConnection:
             (bar,) = conn.query_one("SHOW public.bar")
             assert bar == "1337"
 
-        with conn.atomic() as txn:
+        with conn.transaction() as txn:
             conn.execute("SET SESSION public.bar TO 1337")
             txn.rollback()
 
@@ -78,9 +67,9 @@ class TestSimpleConnection:
             (val,) = conn.query_one("SHOW {}".format(quote_ident(ident, conn)))
             assert val == ""
 
-        with conn.atomic() as txn:
+        with conn.transaction() as txn:
             conn.execute("SET SESSION public.foo TO 42")
-            with conn.atomic() as sp:
+            with txn.savepoint("sp") as sp:
                 conn.execute("SET SESSION public.foo TO 1337")
                 sp.rollback()
             txn.commit()

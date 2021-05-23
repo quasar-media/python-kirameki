@@ -138,47 +138,29 @@ class _Transaction(_TransactionMixin):
 class SimpleConnectionMixin:
     transaction_class = _Transaction
 
-    _transaction = None
-
-    def atomic(
-        self, name=None, isolation_level=None, readonly=None, deferrable=None
+    def transaction(
+        self,
+        isolation_level=None,
+        readonly=None,
+        deferrable=None,
     ):
         if isolation_level is extensions.ISOLATION_LEVEL_AUTOCOMMIT:
             raise psycopg2.OperationalError(
                 "cannot use autocommit in transaction context"
             )
-        if self._transaction:
-            if any(
-                filter(
-                    lambda v: v is not None,
-                    (isolation_level, readonly, deferrable),
-                )
-            ):
-                warnings.warn(
-                    "cannot change characteristics mid-transaction "
-                    "(i.e. when creating a savepoint)",
-                    exc.KiramekiWarning,
-                    stacklevel=2,
-                )
-            name = name or uuid.uuid4().hex
-            return self._transaction.savepoint(name)
-        return self._atomic(isolation_level, readonly, deferrable)
 
-    @contextmanager
-    def _atomic(self, isolation_level, readonly, deferrable):
         if self.info.transaction_status != extensions.TRANSACTION_STATUS_IDLE:
             raise psycopg2.OperationalError(
                 "cannot start a transaction while "
                 "one is already in progress (connection not idle)"
             )
-        self._transaction = self.transaction_class(
-            self, isolation_level, readonly, deferrable
+
+        return self.transaction_class(
+            self,
+            isolation_level,
+            readonly,
+            deferrable,
         )
-        try:
-            with self._transaction:
-                yield self._transaction
-        finally:
-            self._transaction = None
 
     def execute(self, query, vars=None):
         with self.cursor() as cur:
