@@ -10,7 +10,7 @@ sys.path.insert(0, SOURCE_ROOT)
 
 from kirameki import __about__  # noqa isort:skip
 
-install_requires = ["psycopg2 ~= 2.8.6"]
+install_requires = ["psycopg2"]
 
 extras_require = {
     "test": [
